@@ -4,3 +4,6 @@
 [submodule "references/k8s-the-hard-way"]
 	path = references/k8s-the-hard-way
 	url = https://github.com/mmumshad/kubernetes-the-hard-way
+[submodule "references/lucassha"]
+	path = references/lucassha
+	url = https://github.com/lucassha/CKAD-resources.git
