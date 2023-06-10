@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ckad1-cron1
+spec:
+  schedule: "* * * * *" # Run every minute
+  startingDeadlineSeconds: 30 # If it doesn't start within 30 seconds, stop it. If this is too low it can cause issues.
+  # If set to less than 10 sec, scheduler may not be able to schedule it.
+  concurrencyPolicy: Allow # Allow | Replace | Forbid
+  successfulJobsHistoryLimit: 3 # Default 3 successful jobs then the pod is deleted
+  failedJobsHistoryLimit: 1 # Default 1 failed job
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: hello
+            image: alpine:latest
+            imagePullPolicy: Always
+            command:
+            - /bin/sh
+            - -c
+            - date; echo Hello from the Kubernetes cluster && sleep 10
+          restartPolicy: OnFailure

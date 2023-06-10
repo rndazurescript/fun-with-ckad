@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ckad1
+spec:
+  activeDeadlineSeconds: 10 # Kill the job after 10 seconds
+  ttlSecondsAfterFinished: 120 # Delete the job after 120 seconds
+  completions: 5
+  parallelism: 1
+  backoffLimit: 4 # Fail the job after 4 retries, exponential backoff 10, 20, 40, 80 seconds with cap 360 seconds.
+  template:
+    spec:
+      restartPolicy: Never # Failed pods stick around for debugging and access logs. Otherwise logs are cleaned up during retry.
+      containers:
+      - name: ctr
+        image: alpine:latest
+        # command: ["echo", "Hello World"]
+        # To see how backoffLimit works and troubleshoot
+        # k get pods --watch and k get jobs --watch
+        # to see pods appearing and that after 2 mins the job is gone
+        command: ["sh", "-c", "echo 'Hello World' && sleep 60"]
+  
+

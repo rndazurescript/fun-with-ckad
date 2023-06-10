@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+    name: pods-high
+    namespace: default
+spec:
+    hard:
+        cpu: "100"
+        memory: 10Gi
+        pods: "10"
+    scopeSelector:
+        matchExpressions:
+            - operator : In
+              scopeName: PriorityClass
+              values: ["high"]
