@@ -55,6 +55,40 @@ ENTRYPOINT ["echo"]
 CMD ["Hello"]
 ```
 
+To set user:
+
+```bash
+docker run --user=1001 my-image
+```
+
+or in Dockerfile
+
+```bash
+From nginx
+
+USER 1001
+```
+
+> Full list of `root` user's capabilities listed in `/usr/include/linux/capability.h`
+
+You can modify capabilities
+
+```bash
+docker run --cap-drop KILL 
+docker run --cap-add MAC_ADMIN
+docker run --privileged # gives all capabilities
+```
+
+To specify in POD level or in Container level add the `securityContext.runAsUser: 1001` in the `spec:` or in the container definition. In the container level you can also add `capabilities.add: ['KILL']`
+
+To verify user:
+
+```bash
+k exec -it my-pod /bin/bash
+# OR
+k exec my-pod -- whoami
+```
+
 ## Alias in linux
 
 Some shorthands for the exam:
@@ -136,8 +170,9 @@ You can delete with the yml file `k delete -f file.yml`.
 
 Main app and sidecars, sidecars handling the environment. A couple of patterns we see:
 
-- Ambassador: App talks to localhost and Ambassador sidecar proxies traffic to real database.
+- Ambassador: App talks to localhost and Ambassador sidecar proxies traffic to real database, e.g. dev/test/prod environment.
 - Adapter: App dumps logs in native format and Adapter sidecar converts the logs to environment's log format.
+- Sidecar: Logging agent that ships logs to central infrastructure (no adaptation)
 
 Another pattern:
 
@@ -254,7 +289,7 @@ Switch context
 k config set-context --current --namespace kube-system
 ```
 
-To specify quotas for a namespace:
+To specify quotas for a namespace and use scopeSelector to target specific resources.
 
 ```yaml
 apiVersion: v1
@@ -264,8 +299,8 @@ metadata:
     namespace: default
 spec:
     hard:
-        cpu: "100"
-        memory: 10Gi
+        cpu: "100" # Same as request.cpu
+        memory: 10Gi # Same as request.memory
         pods: "10"
     scopeSelector:
         matchExpressions:
@@ -273,6 +308,59 @@ spec:
               scopeName: PriorityClass
               values: ["high"]
 ```
+
+The scopeSelector field is used to target pods with the PriorityClass named high.
+
+To specify resource request for container within pod:
+
+```yaml
+  - name: container-name
+    image: nginx
+    resources: 
+      requests:
+        memory: "2Gi" # Ki is 1024 while K is 1000
+        cpu: 100m # = 0.1 
+      limits: # If not respected, system will :
+        memory: "4Gi" # Terminate with OOM 
+        cpu: 2 # throttle CPU
+```
+
+Ideally we set requests and not the limits, unless you need to avoid memory leaks, abuse etc.
+
+To enforce a limit range for new containers in the pods across cluster:
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: my-limit-range
+spec:
+  limits:
+  - type: Container
+    max:
+      cpu: "2"
+      memory: 4Gi
+    min:
+      cpu: "100m"
+      memory: 512Mi
+    default:
+      cpu: "500m"
+      memory: 1Gi
+    defaultRequest:
+      cpu: "200m"
+      memory: 512Mi
+```
+
+Where:
+
+- The maximum CPU limit is 2 CPU units (1000m = 1 CPU unit).
+- The maximum memory limit is 4Gi.
+- The minimum CPU limit is 100m.
+- The minimum memory limit is 512Mi.
+- The default CPU limit is 500m.
+- The default memory limit is 1Gi.
+- The default CPU request is 200m.
+- The default memory request is 512Mi.
 
 ## ConfigMaps
 
@@ -283,6 +371,10 @@ envFrom:
   - configMapRef:
       name: my-config-map
 
+envFrom:
+  - secretRef:
+      name: my-secret
+
 ---
 
 env:
@@ -292,9 +384,212 @@ env:
             name: my-config-map
             key: LALA
 
+env:
+    - name: LALA
+      valueFrom:
+         secretKeyRef:
+            name: my-secret
+            key: LALA
+
 ---
 volumes:
     - name: my-vol
       configMap:
         name: my-config-map
+
+volumes:
+    - name: my-vol
+      secret:
+        name: my-secret
 ```
+
+Secret values are base64 encoded (not encrypted) 🤔:
+
+```bash
+echo -n 'hello' | base64
+echo -n 'aGVsbG8=' | base64 --decode
+```
+
+To view secrets in base64.
+
+```bash
+k get secret name -o yaml
+```
+
+If use volumes, each value is a separate file, e.g. `ls /opt/my-vol`.
+
+Fast way to create secrets instead of base64 encoding manually:
+
+```bash
+k create secret generic the-secret --from-literal=thekey=thevalue --dry-run=client -o yaml > secret.yml
+```
+
+## Service accounts
+
+```bash
+k create seviceaccount automation
+k describe sa automation # Shows the token's secret name e.g. automation-token-sdsa (up to 1.23)
+k describe secret automation-token-sdsa # To see the token used as Auth token for the k8s API
+curl https://<k8s-api>:6443/api -insecure --header "Authorization: Bearer <token>"
+```
+
+A default service account exists for each namespace that used to automatically mount in all PODS, this is why we have the default mount:
+
+```bash
+k exec my-pod -- ls /var/run/secrets/kubernetes.io/serviceaccount
+k exec my-pod -- cat /var/run/secrets/kubernetes.io/serviceaccount/token
+```
+
+For POD, you can change by specifying `serviceAccountName: automation` at the `containers:` level. To disable auto mount user `automountServiceAccountToken: false`.
+
+> NOTE: Since 1.22 the volume is a `projected` one that grabs a token from the Token API.
+
+> NOTE: In 1.24 you need to manually create the token for service accounts `k create token automation` with default expiration 1h.
+
+To create an old non expiring token for compatibility 🤔:
+
+```yaml
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/service-account-token
+metadata:
+  name: automation-token-sdsa
+  annotations:
+     kubernetes.io/service-account.name: automation
+```
+
+To bind role:
+
+```yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: default
+  name: role-able-to-read-pod
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - get
+  - watch
+  - list
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: automation-reads-pods
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: automation
+  namespace: default
+roleRef:
+  kind: Role # [Role, ClusterRole]
+  name: role-able-to-read-pod
+  apiGroup: rbac.authorization.k8s.io
+```
+
+## Node and pods
+
+### Taints & Toleration
+
+Assume you want to avoid adding generic pods in a GPU node. Example is the `master` node (`k describe node controlplane | grep Taint`).
+
+- Taint the node with app-type=gpu. No pod can tolerate taint and can't be placed there.
+  `k taint nodes name app-type=gpu:NoSchedule` where for effect I can also specify `PreferNoSchedule` or `NoExecute` to evict existing.
+- Add toleration to pod:
+  
+  ```yaml
+  kind: Pod
+  ...
+  containers:
+    ...
+  tolerations:
+  - key: "app-type"
+    operator: "Equal"
+    value: "gpu"
+    effect: "NoSchedule"
+  ```
+
+> Note: The pod with toleration may end up in another node.
+
+### Label nodes
+
+To assign pods that require SSD only so specific nodes.
+
+- Add label to node `k label node name disktype=ssd`.
+- Add selector to pod:
+
+  ```yaml
+  kind: Pod
+  ...
+  containers:
+    ...
+  nodeSelector:
+    disktype: ssd
+  ```
+
+> Note: Can not specify `OR` or `NOT` selectors.
+
+### Affinity
+
+Same as nodeSelector:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-container
+    image: nginx
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: # also preferred...
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: disktype
+            operator: In # NotIn, Exists etc
+            values:
+            - ssd
+```
+
+> Note: we can use preferredDuringSchedulingIgnoredDuringExecution to have the pod run even if we don't have GPU nodes.
+
+## Monitoring
+
+Three readiness probes set at the container level:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: my-container
+    image: nginx
+    readinessProbe: # We can also create livenessProbe 
+      initialDelaySeconds: 5
+      periodSeconds: 30
+      failureThreshold: 3 # Default attempts
+      httpGet:
+        path: /index.html
+        port: 80
+      tcpSocket:
+        port: 8080
+      exec:
+        command:
+        - cat
+        - /tmp/ready
+```
+
+The httpGet probe checks if the container is ready by sending an HTTP GET request to the specified path and port. In this case, the probe sends an HTTP GET request to /index.html on port 80.
+
+The tcpSocket probe checks if the container is ready by attempting to open a TCP connection to the specified port. In this case, the probe attempts to open a TCP connection to port 8080.
+
+The exec probe checks if the container is ready by running a command inside the container and checking the exit code. In this case, the probe runs the cat /tmp/ready command inside the container and checks the exit code.
+
