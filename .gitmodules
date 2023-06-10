@@ -1,6 +1,6 @@
-[submodule "others/pluralsight-ckad"]
-	path = others/pluralsight-ckad
+[submodule "references/pluralsight-ckad"]
+	path = references/pluralsight-ckad
 	url = https://github.com/nigelpoulton/ckad.git
-[submodule "others/k8s-the-hard-way"]
-	path = others/k8s-the-hard-way
+[submodule "references/k8s-the-hard-way"]
+	path = references/k8s-the-hard-way
 	url = https://github.com/mmumshad/kubernetes-the-hard-way
