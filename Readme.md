@@ -105,12 +105,12 @@ alias k=kubectl
 complete -o default -F __start_kubectl k
 ```
 
-Tips: alias for getting all pods/services/etc I also found useful, kgp, kgs and changing namespace.
+> Tips: alias for getting all pods/services/etc I also found useful, kgp, kgs and changing namespace.
 
 ```bash
 k config use-context docker-desktop
 kubectl config set-context --current --namespace=app
-``
+```
 
 Useful commands: 
 
