@@ -9,11 +9,28 @@ curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s htt
 
 > NOTE: There are faster ways to do things. This is a dump of commands I was playing with to prep for the certification.
 
+## Linux cmds
+
+```bash
+k get pods --no-headers | wc -l # Count pods
+
+
+```
+
+ctrl+K delete line in nano
+
 ## Fun with docker images
 
 ```bash
 docker save chatgpt-image:latest -o image.tar
 docker save chatgpt-image:latest | gzip > image.tar.gz
+```
+
+Run a docker in background and get logs:
+
+```bash
+docker run -d image:latest
+docker logs -f container-id
 ```
 
 Dump a running container:
@@ -87,6 +104,13 @@ To verify user:
 k exec -it my-pod /bin/bash
 # OR
 k exec my-pod -- whoami
+```
+
+Various docker commands:
+
+```bash
+d history image-name # See layers and sizes
+
 ```
 
 ## Alias in linux
@@ -235,9 +259,31 @@ kubectl get pods -n kube-system
 kubectl get sc
 ```
 
+```yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: thepod
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+      volumeMounts:
+      - mountPath: "/var/www/html"
+        name: myvolume
+  volumes:
+    - name: myvolume
+      persistentVolumeClaim:
+        claimName: myclaim
+```
+
 If the cluster spans across multiple regions but the storage doesn't, you may need `WaitForFirstConsumer` volumebindingmode (instead of `immediate`) which will create the volume when the pod is scheduled in a node.
 
 Readonly vs ReadWrite Claim
+
+To autoprovision pv in cloud, you create StorageClass and then use the storageClassName in the spec of the PVC.
+
+`volumeClaimTemplates:` allows StatefulSet to create one PVC per pod, which enables databases to have separate storages which re-attach when the pod restarts. Ideal for active-passive databases.
 
 ## Deployments
 
@@ -402,6 +448,12 @@ volumes:
       secret:
         name: my-secret
 ```
+
+> TIP: you can also ref other sections:
+> valueFrom:
+>  fieldRef:
+>   fieldPath: metadata.name
+
 
 Secret values are base64 encoded (not encrypted) 🤔:
 
@@ -592,4 +644,301 @@ The httpGet probe checks if the container is ready by sending an HTTP GET reques
 The tcpSocket probe checks if the container is ready by attempting to open a TCP connection to the specified port. In this case, the probe attempts to open a TCP connection to port 8080.
 
 The exec probe checks if the container is ready by running a command inside the container and checking the exit code. In this case, the probe runs the cat /tmp/ready command inside the container and checks the exit code.
+
+If the app crashes, the services will serve only the pods with READY: True (`k describe pods/name`) while waiting for the container to restart.
+
+## Logs & monitoring
+
+```bash
+k logs -f pod
+# If multiple
+k logs -f pod container
+```
+
+To enable metrics server:
+
+```bash
+minikube addons enable metrics-server
+# OR clone metrics server git and create -f deploy/version/
+```
+
+To get metrics:
+
+```bash
+k top node
+k top pod
+```
+
+## Designing PODs
+
+```yml
+metadata:
+  labels:
+    app: my-application
+    function: database
+```
+
+```bash
+k get pods --selector app=my-application
+k delete pod -l name=my-application # Delete all pods matching the label
+```
+
+`Service` uses the selector to define the target pods.
+For `ReplicaSet` only the pod template labels are taken into consideration for the `replicas` count.
+
+`annotations` are used to record info. Common use cases are version, build tool, contact details etc.
+
+## Updates
+
+```bash
+# Change image of a container in the deployment
+k set image deployment/mydep mycont=nginx:1.8.1 --record # The record will save the command in the rollout
+```
+
+Rollouts create deployment revisions
+
+```bash
+k rollout status deployment/mydep
+k rollout history deployment/mydep # previous versions
+k rollout history deployment/mydep --revision=1# details of revision
+k rollout undo deployment/mydep --to-revision=1 # Optionally specify to-revision
+k rollout get deployments
+```
+
+There are two deployment strategies: `Recreate` with downtime and `RollingUpdate` which takes replicas 1 by 1. These are shown when you describe the deployment.
+
+For Blue-Green use service with selector on labels and switch the selector to the new deployment.
+Canary is similar but with a weight, sending partial traffic to the new deployment. Common label in service and reduce the number of pods in the new deployment. Istio can do weighted routing.
+
+
+## Services
+
+Services allow external or internal connectivity.
+
+- NodePort: Expose a list of `nodePort` which maps to a pod's `targetPort` (optional as it will use the `port` attribute if it is the same). Uses internal load balancer with random and affinity.
+- ClusterIP: Virtual IP within the cluster to route to port `targetPort` of the pods from the selector.
+- LoadBalancer: Available in cloud providers
+
+To create a controller:
+
+Deployment with nginx-ingress-controller and pass a ConfigMap with all the settings. You also specify the container ports.
+Then expose through a nodeport.
+A service account is also needed to access metadata from pods.
+
+Once I have the ingress, you can expose services using ingress resource. We can also specify http path rules which can optionally get a host property.
+There is also a default endpoint if you describe the ingress.
+
+Here is an [example of rewrite](https://kubernetes.github.io/ingress-nginx/examples/rewrite/):
+
+```yml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  name: rewrite
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: rewrite.bar.com
+    http:
+      paths:
+      - path: /something(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: http-svc
+            port: 
+              number: 80
+```
+
+To setup nginx:
+
+```bash
+k create ns ingress-nginx
+k create configmap -n ingress-nginx ingress-nginx-controller
+k create sa -n ingress-nginx ingress-nginx
+k create sa -n ingress-nginx ingress-nginx-admission
+```
+
+Create Roles, RoleBindings, ClusterRoles, and ClusterRoleBindings for the ServiceAccounts.
+
+For NetworkPolicy, you need to specify both Ingress and Egress in the policyTypes, otherwise, whatever you omit won't be filtered (visible in `k describe netpol my-policy`).
+Calico doesn't support NetworkPolicy.
+
+```yml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: internal-policy
+spec:
+  podSelector:
+    matchLabels:
+      name: internal
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+            name: rest-pod
+      namespaceSelector: # This is an AND
+        matchLabels:
+            name: prod
+    - ipBlock: # If you add 2nd item it's an OR
+        cidr: 192.168.1.1/32
+  ports:
+  - protocol: TCP
+    port: 3389
+egress:
+    - to: ..
+```
+
+Headless services (`clusterIp: None`) expose a subdomain in the namespace where each pod name is exposed through it. Helps with StatefulSets to reach to master node, e.g. sql-0.mssql-h.default.svc.cluster.local. 
+In pods you can use the `subdomain:` in the spec to create the headless services dns record and the `hostname:` to create the dns record for the pod. This won't work in deployments (same hostname for all pods) thus the need for StatefulSet where you specify the `serviceName:` in the spec.
+
+
+## Kubeconfig file
+
+Sections:
+
+- Clusters: server specification
+- Users: keys and certificates for user.
+- Context: which user used for which cluster
+
+example:
+
+```yml
+apiVersion: v1
+kind: Config
+current-context:  user-name@cluster-name 
+clusters:
+- name: cluster-name
+  cluster:
+    certificate-authority: /etc/k/ca.crt # Or -data and use `cat ca.crt | base64`
+    server: http://cluster.local
+users:
+- name:  user-name
+  user:
+    client-certificate: /etc/k/admin.crt
+    client-key: /etc/k/admin.key
+contexts:
+- name: user-name@cluster-name 
+  context:
+    cluster:  cluster-name
+    user:  user-name
+    namespace: default # Optional
+```
+
+Managing:
+
+```bash
+k config view # --kubeconfig=my-config
+k config use-context user@cluster # change current context
+```
+
+> To access the API from local you need to pass credentials so you can use `k proxy 8001&` that starts a proxy at 8001 port.
+To see api groups:
+
+```bash
+curl localhost:8001
+curl localhost:8001/apis | grep "name"
+```
+
+## Security
+
+kube-apiserver auth mechanisms:
+
+- Static password: csv with password, username, userid and optionally a group. Defined in the kube-apiserver.service through `--basic-auth-file` or the equivalent yaml section through the [kubeadm tool](https://kubernetes.io/docs/reference/setup-tools/kubeadm/). Then use through `Authorization: Basic <encode u:p>`.
+- Token file: Again csv with token, username, userid and group but now you pass `Authorization: Bearer <token>` to authenticate.
+
+```yml
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: default
+  name: pod-reader
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+  resourceNames: ["app"] # Optional for even finer control
+---
+# This role binding allows "ab0t" to read pods in the "default" namespace.
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: read-pods
+  namespace: default
+subjects:
+- kind: User
+  name: ab0t # Name is case sensitive
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role #this must be Role or ClusterRole
+  name: pod-reader # this must match the name of the Role or ClusterRole you wish to bind to
+  apiGroup: rbac.authorization.k8s.io
+
+```
+
+Authorization methods defined in the `--authorization-mode` section (allows multiple ordered with ,):
+
+- Node: Node Authorizer allows nodes to connect to API through certificate.
+- ABAC: For each user or group create a file specifying access and restart API server. Difficult to manage.
+- RBAC: Create role and then assign users/groups.
+- Webhook: Open Policy Agent is an example.
+- AlwaysAllow or AlwaysDeny
+
+To check things:
+
+```bash
+ps -aux | grep authorization # Check the authorization mode
+k auth can-i create deployments # if I have permissions
+k auth can-i create deployments --as dev-user # To impersonate
+k api-resources --namespaced=false # See things for clusterroles
+```
+
+> TIP: You can define a `ClusterRole` for namespaced resources and that would allow access across namespaces.
+
+Admission controllers allow you to intercept requests to the API server (after the authorization) and modify them before they are persisted to etcd. They are defined in the `--enable-admission-plugins` section. Examples: `AlwaysPullImages` and `NamespaceAutoProvision` (deprecated). The config file for k8s is located in `/etc/kubernetes/manifests/kube-apiserver.yaml`. Apiserver will restart if you change it. You can disable default plugins using `--disable-admission-plugins`.
+
+```bash
+kube-apiserver -h | grep enable-admission-plugins
+# OR
+k get pods -n kube-system # Find the apiserver pod
+k exec kube-apiserver-controlplane -n kube-system -- kube-apiserver -h | grep enable-admission-plugins
+```
+
+Mutating admission controllers like DefaultStorageClass append attributes to your requests. The other type of admission controllers is validating ones which will decline the request. We can create our own with the MutatingAdmissionWebhook and ValidatingAdmissionWebhook. The webhook is a service that receives the request and returns a response.
+
+```bash
+k explain deployment # see the Preferred/Storage version of the api. All requests are stored with that version in etcd. Also see the group.
+kubect-convert -f file.yml --output-version apps/v1 # Convert to a specific version (needs to install)
+```
+
+## Helm
+
+```bash
+sudo snap install helm --classic
+helm install wordpress
+helm upgrade wordpress
+helm rollback wordpress
+helm uninstall wordpress
+```
+
+Use values.yaml to pass parameters.
+
+```bash
+helm search hub wordpress
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo list
+helm search repo wordpress
+helm install release-1 bitnami/wordpress
+helm pull --untar bitnami/wordpress && ls wordpress
+helm install release-2 ./wordpress # Install from local
+```
 
